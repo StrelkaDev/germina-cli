@@ -3,9 +3,7 @@ pub mod command;
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum WebServerState {
     Stopped,
-    Starting,
     Running,
-    Stopping,
 }
 
 pub(crate) struct WebManager {
@@ -23,9 +21,8 @@ impl WebManager {
 
     pub(crate) async fn start(&mut self) -> anyhow::Result<()> {
         match self.state {
-            WebServerState::Running | WebServerState::Starting => Ok(()),
-            WebServerState::Stopped | WebServerState::Stopping => {
-                self.state = WebServerState::Starting;
+            WebServerState::Running => Ok(()),
+            WebServerState::Stopped => {
                 self.state = WebServerState::Running;
                 Ok(())
             }
@@ -34,9 +31,8 @@ impl WebManager {
 
     pub(crate) async fn stop(&mut self) -> anyhow::Result<()> {
         match self.state {
-            WebServerState::Stopped | WebServerState::Stopping => Ok(()),
-            WebServerState::Running | WebServerState::Starting => {
-                self.state = WebServerState::Stopping;
+            WebServerState::Stopped => Ok(()),
+            WebServerState::Running => {
                 self.state = WebServerState::Stopped;
                 Ok(())
             }

@@ -58,12 +58,10 @@ async fn handle_log_stream(
             },
         };
 
-        if event_tx
-            .try_send(crate::node::session::events::TransportEvent::Log { node_id, record })
-            .is_err()
-        {
-            eprintln!("Dropping remote log due to backpressure for node {}", node_id);
-        }
+        let _ = event_tx.try_send(crate::node::session::events::TransportEvent::Log {
+            node_id,
+            record,
+        });
     }
 
     Ok(())
