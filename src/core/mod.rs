@@ -2,14 +2,17 @@ use tokio::sync::mpsc;
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
+    /// Manage node processes
     Node {
         #[command(subcommand)]
         command: crate::node::command::NodeCommand,
     },
+    /// Manage web servers
     Web {
         #[command(subcommand)]
         command: crate::web::command::WebCommand,
     },
+    /// Stop the orchestrator and all managed nodes
     Exit,
 }
 
@@ -31,6 +34,8 @@ impl Core {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        self.node_manager.ensure_listener().await?;
+
         while let Some(command) = self.rx.recv().await {
             match command {
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await?,
@@ -38,6 +43,8 @@ impl Core {
                 CoreCommand::Exit => break,
             }
         }
+
+        self.node_manager.shutdown().await;
         Ok(())
     }
 }
