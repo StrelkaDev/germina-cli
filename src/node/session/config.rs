@@ -1,8 +1,8 @@
 use anyhow::{Context, anyhow};
 use std::sync::Arc;
 
-const CERT_DER: &[u8] = include_bytes!("certs/orchestrator_cert.der");
-const KEY_DER: &[u8] = include_bytes!("certs/orchestrator_key.der");
+const CERT_DER: &[u8] = include_bytes!("../certs/orchestrator_cert.der");
+const KEY_DER: &[u8] = include_bytes!("../certs/orchestrator_key.der");
 
 pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
     let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
