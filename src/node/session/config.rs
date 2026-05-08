@@ -1,34 +1,37 @@
 use anyhow::{Context, anyhow};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-const CERT_DER: &[u8] = include_bytes!("../certs/orchestrator_cert.der");
-const KEY_DER: &[u8] = include_bytes!("../certs/orchestrator_key.der");
+static RUNTIME_TLS_IDENTITY: Mutex<Option<(Vec<u8>, Vec<u8>)>> = Mutex::new(None);
+
+fn runtime_tls_identity() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let mut guard = RUNTIME_TLS_IDENTITY
+        .lock()
+        .map_err(|_| anyhow!("Failed to lock runtime TLS identity store"))?;
+
+    if let Some((cert_der, key_der)) = guard.as_ref() {
+        return Ok((cert_der.clone(), key_der.clone()));
+    }
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .map_err(|e| anyhow!("Failed to generate runtime TLS certificate: {e}"))?;
+
+    let cert_der = cert.cert.der().to_vec();
+    let key_der = cert.signing_key.serialize_der();
+
+    *guard = Some((cert_der.clone(), key_der.clone()));
+    Ok((cert_der, key_der))
+}
 
 pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
+    let (cert_der, key_der) = runtime_tls_identity()?;
+
+    let cert = rustls::pki_types::CertificateDer::from(cert_der.clone());
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        KEY_DER.to_vec(),
+        key_der.clone(),
     ));
 
     let mut config = quinn::ServerConfig::with_single_cert(vec![cert], key)
         .context("Failed to create QUIC server config")?;
     config.transport = Arc::new(quinn::TransportConfig::default());
     Ok(config)
-}
-
-pub(crate) fn client_config() -> anyhow::Result<quinn::ClientConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(cert)
-        .map_err(|e| anyhow!("Failed to add root cert: {e}"))?;
-
-    let crypto = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-
-    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-        .map_err(|e| anyhow!("Failed to build QUIC client crypto: {e}"))?;
-
-    Ok(quinn::ClientConfig::new(Arc::new(quic_crypto)))
 }

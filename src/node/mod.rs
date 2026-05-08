@@ -6,26 +6,8 @@ use tokio::sync::mpsc;
 pub mod command;
 mod event_mapper;
 mod events;
-pub mod process;
 pub mod service;
 pub mod session;
-
-#[derive(clap::ValueEnum, Clone, Copy, Debug)]
-pub(crate) enum NodeType {
-    Client,
-    Server,
-    Tools,
-}
-
-impl NodeType {
-    pub(crate) fn as_cli_value(self) -> &'static str {
-        match self {
-            NodeType::Client => "client",
-            NodeType::Server => "server",
-            NodeType::Tools => "tools",
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum NodeStatus {
@@ -33,15 +15,6 @@ pub(crate) enum NodeStatus {
     Connected,
     Disconnected,
     Failed,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NodeRuntimeConfig {
-    pub id: u64,
-    pub node_type: NodeType,
-    pub name: String,
-    pub dev_mode: bool,
-    pub orchestrator_addr: SocketAddr,
 }
 
 pub(crate) struct NodeManager {
@@ -122,32 +95,6 @@ impl NodeManager {
         for line in self.service.list_lines() {
             println!("{line}");
         }
-    }
-
-    pub async fn start(&mut self, node_type: NodeType) -> anyhow::Result<()> {
-        self.ensure_listener().await?;
-        self.refresh_events().await;
-
-        let node_id = self.service.allocate_node_id()?;
-        let config = self.service.build_runtime_config(node_id, node_type);
-
-        let process = process::spawn_node_process(
-            config.orchestrator_addr,
-            config.id,
-            config.node_type,
-            config.dev_mode,
-        )?;
-
-        let pid = process
-            .child
-            .id()
-            .map(|child_id| child_id.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        self.service.register_started_node(config, process);
-
-        println!("Started node {node_id} ({node_type:?}), pid={pid}");
-        Ok(())
     }
 
     pub async fn set_dev_mode(&mut self, id: u64, state: bool) -> anyhow::Result<()> {

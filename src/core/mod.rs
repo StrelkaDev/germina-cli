@@ -2,7 +2,7 @@ use tokio::sync::{mpsc, oneshot};
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
-    /// Manage node processes
+    /// Manage node sessions
     Node {
         #[command(subcommand)]
         command: crate::node::command::NodeCommand,

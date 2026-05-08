@@ -1,7 +1,11 @@
 #[derive(clap::Subcommand, Clone, Debug)]
+#[command(about = "Web server commands")]
 pub(crate) enum WebCommand {
+    /// Start the web server
     Start,
+    /// Stop the web server
     Stop,
+    /// Show current web server status
     Status,
 }
 

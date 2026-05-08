@@ -1,14 +1,12 @@
 use crate::node::NodeManager;
 
 #[derive(clap::Subcommand, Clone, Debug)]
+#[command(about = "Node session commands")]
 pub(crate) enum NodeCommand {
+    /// List known node sessions and their states
     #[command(alias = "l")]
     List,
-    #[command(alias = "s")]
-    Start {
-        #[arg(short = 't', long = "type")]
-        node_type: crate::node::NodeType,
-    },
+    /// Change node dev mode (on/off)
     Dev {
         #[arg(short, long, value_name = "ID", help = "node id")]
         id: u64,
@@ -20,6 +18,7 @@ pub(crate) enum NodeCommand {
         )]
         state: bool,
     },
+    /// Show detailed information for a node
     #[command(alias = "i")]
     Info {
         #[arg(short, long, value_name = "ID", help = "node id")]
@@ -32,9 +31,6 @@ impl NodeCommand {
         match self {
             NodeCommand::List => {
                 manager.list();
-            }
-            NodeCommand::Start { node_type } => {
-                manager.start(*node_type).await?;
             }
             NodeCommand::Dev { id, state } => {
                 manager.set_dev_mode(*id, *state).await?;

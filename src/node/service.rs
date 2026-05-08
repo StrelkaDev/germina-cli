@@ -1,22 +1,18 @@
 use anyhow::{Context, anyhow};
 use serde_json::json;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-};
+use std::{collections::HashMap, net::SocketAddr};
 use tokio::sync::oneshot;
 
 pub(crate) struct Node {
-    pub config: crate::node::NodeRuntimeConfig,
+    pub id: u64,
     pub status: crate::node::NodeStatus,
-    pub process: Option<crate::node::process::SpawnedNodeProcess>,
+    pub dev_mode: bool,
     pub connection: Option<quinn::Connection>,
     pub session: crate::node::session::protocol::NodeSession,
 }
 
 pub(crate) struct NodeService {
     nodes: HashMap<u64, Node>,
-    next_id: u64,
     rpc_seq: u64,
     pending_rpc: HashMap<u64, oneshot::Sender<crate::node::session::protocol::RpcMessage>>,
     orchestrator_addr: SocketAddr,
@@ -26,7 +22,6 @@ impl NodeService {
     pub(crate) fn new(orchestrator_addr: SocketAddr) -> Self {
         Self {
             nodes: HashMap::new(),
-            next_id: 1,
             rpc_seq: 1,
             pending_rpc: HashMap::new(),
             orchestrator_addr,
@@ -37,62 +32,15 @@ impl NodeService {
         self.orchestrator_addr
     }
 
-    pub(crate) fn allocate_node_id(&mut self) -> anyhow::Result<u64> {
-        let node_id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("Node ID overflow"))?;
-
-        if self.nodes.contains_key(&node_id) {
-            return Err(anyhow!("Node with id {node_id} already exists"));
-        }
-
-        Ok(node_id)
-    }
-
-    pub(crate) fn build_runtime_config(
-        &self,
-        node_id: u64,
-        node_type: crate::node::NodeType,
-    ) -> crate::node::NodeRuntimeConfig {
-        crate::node::NodeRuntimeConfig {
-            id: node_id,
-            node_type,
-            name: format!("node-{node_id}"),
-            dev_mode: false,
-            orchestrator_addr: self.orchestrator_addr,
-        }
-    }
-
-    pub(crate) fn register_started_node(
-        &mut self,
-        config: crate::node::NodeRuntimeConfig,
-        process: crate::node::process::SpawnedNodeProcess,
-    ) {
-        self.nodes.insert(
-            config.id,
-            Node {
-                config,
-                status: crate::node::NodeStatus::Starting,
-                process: Some(process),
-                connection: None,
-                session: crate::node::session::protocol::NodeSession { rpc_sender: None },
-            },
-        );
-    }
-
     pub(crate) fn list_lines(&self) -> Vec<String> {
         self.nodes
             .values()
             .map(|node| {
                 format!(
-                    "ID: {}, Type: {:?}, Name: {}, Status: {:?}, Dev: {}, RPC: {}",
-                    node.config.id,
-                    node.config.node_type,
-                    node.config.name,
+                    "ID: {}, Status: {:?}, Dev: {}, RPC: {}",
+                    node.id,
                     node.status,
-                    node.config.dev_mode,
+                    node.dev_mode,
                     node.session.rpc_sender.is_some()
                 )
             })
@@ -104,7 +52,7 @@ impl NodeService {
             .nodes
             .get_mut(&id)
             .ok_or_else(|| anyhow!("Node {id} not found"))?;
-        node.config.dev_mode = state;
+        node.dev_mode = state;
         Ok(())
     }
 
@@ -115,17 +63,8 @@ impl NodeService {
             .ok_or_else(|| anyhow!("Node {id} not found"))?;
 
         Ok(format!(
-            "Node {} => type={:?}, name={}, status={:?}, dev={}, pid={}",
-            node.config.id,
-            node.config.node_type,
-            node.config.name,
-            node.status,
-            node.config.dev_mode,
-            node.process
-                .as_ref()
-                .and_then(|p| p.child.id())
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
+            "Node {} => status={:?}, dev={}",
+            node.id, node.status, node.dev_mode,
         ))
     }
 
@@ -136,10 +75,16 @@ impl NodeService {
     }
 
     pub(crate) fn mark_connected(&mut self, node_id: u64, connection: quinn::Connection) {
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            node.connection = Some(connection);
-            node.status = crate::node::NodeStatus::Connected;
-        }
+        let node = self.nodes.entry(node_id).or_insert_with(|| Node {
+            id: node_id,
+            status: crate::node::NodeStatus::Starting,
+            dev_mode: false,
+            connection: None,
+            session: crate::node::session::protocol::NodeSession { rpc_sender: None },
+        });
+
+        node.connection = Some(connection);
+        node.status = crate::node::NodeStatus::Connected;
     }
 
     pub(crate) fn set_rpc_sender(
@@ -262,10 +207,6 @@ impl NodeService {
 
     pub(crate) async fn shutdown(&mut self) {
         for node in self.nodes.values_mut() {
-            if let Some(process) = node.process.as_mut() {
-                let _ = process.child.start_kill();
-                let _ = process.child.wait().await;
-            }
             node.status = crate::node::NodeStatus::Disconnected;
             node.connection = None;
             node.session.rpc_sender = None;
