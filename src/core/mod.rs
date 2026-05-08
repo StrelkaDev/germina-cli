@@ -12,8 +12,6 @@ pub(crate) enum CoreCommand {
         #[command(subcommand)]
         command: crate::web::command::WebCommand,
     },
-    /// Stop the orchestrator and all managed nodes
-    Exit,
 }
 
 pub struct Core {
@@ -37,10 +35,13 @@ impl Core {
         self.node_manager.ensure_listener().await?;
 
         while let Some(command) = self.rx.recv().await {
-            match command {
-                CoreCommand::Node { command } => command.execute(&mut self.node_manager).await?,
-                CoreCommand::Web { command } => command.execute(&mut self.web_manager).await?,
-                CoreCommand::Exit => break,
+            let result = match command {
+                CoreCommand::Node { command } => command.execute(&mut self.node_manager).await,
+                CoreCommand::Web { command } => command.execute(&mut self.web_manager).await,
+            };
+
+            if let Err(err) = result {
+                eprintln!("Command failed: {err}");
             }
         }
 

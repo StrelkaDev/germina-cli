@@ -7,7 +7,8 @@ use tokio::sync::mpsc;
 #[command(
     no_binary_name = true,
     disable_help_flag = true,
-    subcommand_required = true
+    subcommand_required = true,
+    override_usage = "<COMMAND>"
 )]
 pub(crate) struct ReplCommand {
     #[command(subcommand)]
@@ -30,7 +31,6 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
         line.clear();
         let read = io::stdin().read_line(&mut line)?;
         if read == 0 {
-            tx.send(CoreCommand::Exit).await?;
             break;
         }
 
@@ -40,7 +40,6 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
         }
 
         if input.eq_ignore_ascii_case("exit") {
-            tx.send(CoreCommand::Exit).await?;
             break;
         }
 
@@ -51,8 +50,7 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
             continue;
         }
 
-        let mut argv = vec!["germina".to_string()];
-        argv.extend(input.split_whitespace().map(ToOwned::to_owned));
+        let argv = input.split_whitespace();
 
         match ReplCommand::try_parse_from(argv) {
             Ok(cmd) => {

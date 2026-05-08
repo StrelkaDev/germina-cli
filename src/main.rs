@@ -11,11 +11,6 @@ fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install AWS-LC-RS crypto provider");
 
-    if let Some(args) = node::process::try_parse_runtime_args_from_env()? {
-        let runtime = tokio::runtime::Runtime::new()?;
-        return runtime.block_on(async { node::process::run_node_runtime(args).await });
-    }
-
     println!("Germina CLI {}", version::VERSION);
 
     let (mut core, tx) = core::Core::new();
