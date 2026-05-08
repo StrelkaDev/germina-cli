@@ -12,7 +12,7 @@ pub(crate) enum NodeCommand {
     Dev {
         #[arg(short, long)]
         id: u64,
-        state: bool,
+        state: String,
     },
     #[command(alias = "i")]
     Info {
@@ -31,7 +31,9 @@ impl NodeCommand {
                 manager.start(*node_type).await?;
             }
             NodeCommand::Dev { id, state } => {
-                manager.set_dev_mode(*id, *state).await?;
+                manager
+                    .set_dev_mode(*id, crate::util::parse_on_off(state)?)
+                    .await?;
             }
             NodeCommand::Info { id } => {
                 manager.info(*id).await?;

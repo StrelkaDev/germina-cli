@@ -2,6 +2,7 @@ mod assets;
 mod cli;
 mod core;
 mod node;
+mod util;
 mod version;
 mod web;
 
