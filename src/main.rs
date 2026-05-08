@@ -1,5 +1,6 @@
 mod assets;
 mod cli;
+mod config;
 mod core;
 mod node;
 mod util;
@@ -11,9 +12,11 @@ fn main() -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install AWS-LC-RS crypto provider");
 
+    let app_config = config::AppConfig::parse()?;
+
     println!("Germina CLI {}", version::VERSION);
 
-    let (mut core, tx) = core::Core::new();
+    let (mut core, tx) = core::Core::new(app_config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
