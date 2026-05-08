@@ -2,14 +2,17 @@ use tokio::sync::mpsc;
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
+    /// Manage node processes
     Node {
         #[command(subcommand)]
         command: crate::node::command::NodeCommand,
     },
+    /// Manage web servers
     Web {
         #[command(subcommand)]
         command: crate::web::command::WebCommand,
     },
+    /// Stop the orchestrator and all managed nodes
     Exit,
 }
 

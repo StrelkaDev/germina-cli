@@ -1,17 +1,27 @@
 use crate::core::CoreCommand;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::io;
 use tokio::sync::mpsc;
 
 #[derive(clap::Parser)]
+#[command(
+    no_binary_name = true,
+    disable_help_flag = true,
+    subcommand_required = true
+)]
 pub(crate) struct ReplCommand {
     #[command(subcommand)]
     pub command: CoreCommand,
 }
 
+fn print_help() {
+    let mut cmd = ReplCommand::command();
+    let help = cmd.render_help();
+    println!("{help}");
+}
+
 pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
-    println!("Type commands, for example: node start --node-type client");
-    println!("Type 'exit' to stop.");
+    print_help();
 
     let mut line = String::new();
     loop {
