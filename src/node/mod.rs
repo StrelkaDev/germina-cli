@@ -191,7 +191,11 @@ impl NodeManager {
             config.dev_mode,
         )?;
 
-        let pid = process.child.id();
+        let pid = process
+            .child
+            .id()
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         self.nodes.insert(
             node_id,
@@ -254,7 +258,8 @@ impl NodeManager {
             node.config.dev_mode,
             node.process
                 .as_ref()
-                .map(|p| p.child.id().to_string())
+                .and_then(|p| p.child.id())
+                .map(|pid| pid.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         );
 
@@ -339,7 +344,8 @@ impl NodeManager {
         self.refresh_events().await;
         for node in self.nodes.values_mut() {
             if let Some(process) = node.process.as_mut() {
-                let _ = process.child.kill();
+                let _ = process.child.start_kill();
+                let _ = process.child.wait().await;
             }
             node.status = NodeStatus::Disconnected;
             node.connection = None;

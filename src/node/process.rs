@@ -5,18 +5,16 @@ use crate::node::{
 use anyhow::{Context, anyhow};
 use serde_json::json;
 use std::{
-    io::{BufRead, BufReader},
     net::SocketAddr,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::Stdio,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::process::{Child, Command};
 use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
-use tokio::sync::oneshot;
 
 pub(crate) struct SpawnedNodeProcess {
     pub child: Child,
-    _parent_stdin_guard: ChildStdin,
 }
 
 #[derive(Clone, Debug)]
@@ -44,18 +42,18 @@ pub(crate) fn try_parse_runtime_args_from_env() -> anyhow::Result<Option<NodeRun
                     .ok_or_else(|| anyhow!("Missing value for --cli"))?;
                 cli_addr = Some(SocketAddr::from_str(value).context("Invalid --cli address")?);
             }
-            "--node-id" => {
+            "--id" => {
                 idx += 1;
                 let value = args
                     .get(idx)
-                    .ok_or_else(|| anyhow!("Missing value for --node-id"))?;
-                node_id = Some(value.parse::<u64>().context("Invalid --node-id")?);
+                    .ok_or_else(|| anyhow!("Missing value for --id"))?;
+                node_id = Some(value.parse::<u64>().context("Invalid --id")?);
             }
-            "--node-type" => {
+            "--type" => {
                 idx += 1;
                 let value = args
                     .get(idx)
-                    .ok_or_else(|| anyhow!("Missing value for --node-type"))?;
+                    .ok_or_else(|| anyhow!("Missing value for --type"))?;
                 node_type = Some(parse_node_type(value)?);
             }
             "--dev" => {
@@ -72,8 +70,8 @@ pub(crate) fn try_parse_runtime_args_from_env() -> anyhow::Result<Option<NodeRun
 
     Ok(Some(NodeRuntimeArgs {
         orchestrator_addr: cli_addr.ok_or_else(|| anyhow!("--cli is required"))?,
-        node_id: node_id.ok_or_else(|| anyhow!("--node-id is required in node mode"))?,
-        node_type: node_type.ok_or_else(|| anyhow!("--node-type is required in node mode"))?,
+        node_id: node_id.ok_or_else(|| anyhow!("--id is required in node mode"))?,
+        node_type: node_type.ok_or_else(|| anyhow!("--type is required in node mode"))?,
         dev,
     }))
 }
@@ -88,13 +86,13 @@ pub(crate) fn spawn_node_process(
 
     let mut command = Command::new(current_exe);
     command
+        .kill_on_drop(true)
         .arg("--cli")
         .arg(orchestrator_addr.to_string())
-        .arg("--node-id")
+        .arg("--id")
         .arg(node_id.to_string())
-        .arg("--node-type")
+        .arg("--type")
         .arg(node_type.as_cli_value())
-        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -103,24 +101,17 @@ pub(crate) fn spawn_node_process(
     }
 
     let mut child = command.spawn().context("Failed to spawn node child process")?;
-    let parent_stdin_guard = child
-        .stdin
-        .take()
-        .context("Failed to capture child stdin guard")?;
     attach_stdio_forwarders(node_id, node_type, &mut child);
 
-    Ok(SpawnedNodeProcess {
-        child,
-        _parent_stdin_guard: parent_stdin_guard,
-    })
+    Ok(SpawnedNodeProcess { child })
 }
 
 fn attach_stdio_forwarders(node_id: u64, node_type: NodeType, child: &mut Child) {
     if let Some(stdout) = child.stdout.take() {
         let prefix = format!("[node-{node_id} {:?} stdout]", node_type);
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
+        tokio::spawn(async move {
+            let mut reader = AsyncBufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
                 println!("{prefix} {line}");
             }
         });
@@ -128,9 +119,9 @@ fn attach_stdio_forwarders(node_id: u64, node_type: NodeType, child: &mut Child)
 
     if let Some(stderr) = child.stderr.take() {
         let prefix = format!("[node-{node_id} {:?} stderr]", node_type);
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
+        tokio::spawn(async move {
+            let mut reader = AsyncBufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
                 eprintln!("{prefix} {line}");
             }
         });
@@ -143,25 +134,17 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
         args.node_id, args.node_type, args.dev, args.orchestrator_addr
     );
 
-    let mut parent_exit = watch_parent_exit();
-
     let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
         .context("Failed to create QUIC client endpoint")?;
     endpoint.set_default_client_config(client_config()?);
 
-    let connection = tokio::select! {
-        result = endpoint
-            .connect(args.orchestrator_addr, "localhost")
-            .context("Failed to connect to orchestrator")? => {
-            result.context("QUIC connect handshake failed")?
-        }
-        _ = &mut parent_exit => return Ok(()),
-    };
+    let connection = endpoint
+        .connect(args.orchestrator_addr, "localhost")
+        .context("Failed to connect to orchestrator")?
+        .await
+        .context("QUIC connect handshake failed")?;
 
-    let (mut log_send, _log_recv) = tokio::select! {
-        result = connection.open_bi() => result?,
-        _ = &mut parent_exit => return Ok(()),
-    };
+    let (mut log_send, _log_recv) = connection.open_bi().await?;
     write_json_line(
         &mut log_send,
         &StreamHello {
@@ -182,10 +165,7 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
     };
     write_json_line(&mut log_send, &startup_log).await?;
 
-    let (mut rpc_send, rpc_recv) = tokio::select! {
-        result = connection.open_bi() => result?,
-        _ = &mut parent_exit => return Ok(()),
-    };
+    let (mut rpc_send, rpc_recv) = connection.open_bi().await?;
     write_json_line(
         &mut rpc_send,
         &StreamHello {
@@ -200,10 +180,7 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
 
     loop {
         let mut line = String::new();
-        let read = tokio::select! {
-            result = reader.read_line(&mut line) => result?,
-            _ = &mut parent_exit => break,
-        };
+        let read = reader.read_line(&mut line).await?;
         if read == 0 {
             break;
         }
@@ -303,17 +280,6 @@ fn parse_node_type(value: &str) -> anyhow::Result<NodeType> {
         "tools" => Ok(NodeType::Tools),
         _ => Err(anyhow!("Invalid node type: {value}")),
     }
-}
-
-/// Monitors the parent-owned stdin pipe so the child node can exit if the orchestrator dies.
-fn watch_parent_exit() -> oneshot::Receiver<()> {
-    let (tx, rx) = oneshot::channel();
-    std::thread::spawn(move || {
-        let mut stdin = std::io::stdin().lock();
-        let _ = std::io::copy(&mut stdin, &mut std::io::sink());
-        let _ = tx.send(());
-    });
-    rx
 }
 
 fn unix_ts() -> String {
