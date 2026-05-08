@@ -22,6 +22,8 @@ fn print_help() {
 
 pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
     print_help();
+    println!("Для вызова справки введите: help");
+    println!();
 
     let mut line = String::new();
     loop {
@@ -40,6 +42,11 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
         if input.eq_ignore_ascii_case("exit") {
             tx.send(CoreCommand::Exit).await?;
             break;
+        }
+
+        if input.eq_ignore_ascii_case("help") {
+            print_help();
+            continue;
         }
 
         let mut argv = vec!["germina".to_string()];
