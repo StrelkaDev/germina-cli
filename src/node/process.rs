@@ -143,7 +143,7 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
         .await
         .context("QUIC connect handshake failed")?;
 
-    let (mut log_send, mut _log_recv) = connection.open_bi().await?;
+    let (mut log_send, _log_recv) = connection.open_bi().await?;
     write_json_line(
         &mut log_send,
         &StreamHello {
