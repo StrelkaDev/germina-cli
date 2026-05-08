@@ -95,49 +95,53 @@ impl NodeManager {
 
     async fn refresh_events(&mut self) {
         while let Ok(event) = self.event_rx.try_recv() {
-            match event {
-                session::NodeEvent::Connected {
-                    node_id,
-                    connection,
-                } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.connection = Some(connection);
-                        node.status = NodeStatus::Connected;
-                    }
+            self.handle_event(event);
+        }
+    }
+
+    fn handle_event(&mut self, event: session::NodeEvent) {
+        match event {
+            session::NodeEvent::Connected {
+                node_id,
+                connection,
+            } => {
+                if let Some(node) = self.nodes.get_mut(&node_id) {
+                    node.connection = Some(connection);
+                    node.status = NodeStatus::Connected;
                 }
-                session::NodeEvent::RpcStreamReady { node_id, sender } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.session.rpc_sender = Some(sender);
-                    }
+            }
+            session::NodeEvent::RpcStreamReady { node_id, sender } => {
+                if let Some(node) = self.nodes.get_mut(&node_id) {
+                    node.session.rpc_sender = Some(sender);
                 }
-                session::NodeEvent::RpcIncoming { node_id, message } => {
-                    if message.method.is_none() {
-                        if let Some(request_id) = message.request_id
-                            && let Some(tx) = self.pending_rpc.remove(&request_id)
-                        {
-                            let _ = tx.send(message);
-                        }
-                    } else {
-                        println!(
-                            "[node-{node_id} rpc] incoming call: {}",
-                            serde_json::to_string(&message)
-                                .unwrap_or_else(|_| "<invalid rpc json>".to_string())
-                        );
+            }
+            session::NodeEvent::RpcIncoming { node_id, message } => {
+                if message.method.is_none() {
+                    if let Some(request_id) = message.request_id
+                        && let Some(tx) = self.pending_rpc.remove(&request_id)
+                    {
+                        let _ = tx.send(message);
                     }
-                }
-                session::NodeEvent::Log { node_id, record } => {
+                } else {
                     println!(
-                        "[node-{node_id} remote-log {} {} {}] {}",
-                        record.timestamp, record.level, record.source, record.message
+                        "[node-{node_id} rpc] incoming call: {}",
+                        serde_json::to_string(&message)
+                            .unwrap_or_else(|_| "<invalid rpc json>".to_string())
                     );
                 }
-                session::NodeEvent::Disconnected { node_id, reason } => {
-                    if let Some(node) = self.nodes.get_mut(&node_id) {
-                        node.status = NodeStatus::Disconnected;
-                        node.connection = None;
-                        node.session.rpc_sender = None;
-                        println!("Node {} disconnected: {}", node_id, reason);
-                    }
+            }
+            session::NodeEvent::Log { node_id, record } => {
+                println!(
+                    "[node-{node_id} remote-log {} {} {}] {}",
+                    record.timestamp, record.level, record.source, record.message
+                );
+            }
+            session::NodeEvent::Disconnected { node_id, reason } => {
+                if let Some(node) = self.nodes.get_mut(&node_id) {
+                    node.status = NodeStatus::Disconnected;
+                    node.connection = None;
+                    node.session.rpc_sender = None;
+                    println!("Node {} disconnected: {}", node_id, reason);
                 }
             }
         }
@@ -207,11 +211,13 @@ impl NodeManager {
     pub async fn set_dev_mode(&mut self, id: u64, state: bool) -> anyhow::Result<()> {
         self.refresh_events().await;
 
-        let node = self
-            .nodes
-            .get_mut(&id)
-            .ok_or_else(|| anyhow!("Node {id} not found"))?;
-        node.config.dev_mode = state;
+        {
+            let node = self
+                .nodes
+                .get_mut(&id)
+                .ok_or_else(|| anyhow!("Node {id} not found"))?;
+            node.config.dev_mode = state;
+        }
 
         let response = self
             .send_rpc_request(id, "set_dev", json!({ "state": state }))
@@ -221,7 +227,9 @@ impl NodeManager {
             Ok(Some(msg)) => println!("Node {id} set_dev response: {:?}", msg.result),
             Ok(None) => println!("Node {id} not connected via RPC yet; only local state updated"),
             Err(err) => {
-                node.status = NodeStatus::Failed;
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.status = NodeStatus::Failed;
+                }
                 return Err(err);
             }
         }
@@ -246,8 +254,7 @@ impl NodeManager {
             node.config.dev_mode,
             node.process
                 .as_ref()
-                .and_then(|p| p.child.id())
-                .map(|id| id.to_string())
+                .map(|p| p.child.id().to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         );
 
@@ -304,13 +311,26 @@ impl NodeManager {
                 .context("Failed to write RPC request")?;
         }
 
-        let result = tokio::time::timeout(Duration::from_secs(3), rx).await;
-        match result {
-            Ok(Ok(message)) => Ok(Some(message)),
-            Ok(Err(_)) => Err(anyhow!("RPC response channel closed")),
-            Err(_) => {
-                self.pending_rpc.remove(&request_id);
-                Err(anyhow!("RPC timeout for method {method}"))
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let mut rx = rx;
+
+        loop {
+            tokio::select! {
+                result = &mut rx => {
+                    return match result {
+                        Ok(message) => Ok(Some(message)),
+                        Err(_) => Err(anyhow!("RPC response channel closed")),
+                    };
+                }
+                maybe_event = self.event_rx.recv() => {
+                    if let Some(event) = maybe_event {
+                        self.handle_event(event);
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.pending_rpc.remove(&request_id);
+                    return Err(anyhow!("RPC timeout for method {method}"));
+                }
             }
         }
     }

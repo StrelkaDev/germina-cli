@@ -88,10 +88,9 @@ pub(crate) fn client_config() -> anyhow::Result<quinn::ClientConfig> {
         .add(cert)
         .map_err(|e| anyhow!("Failed to add root cert: {e}"))?;
 
-    let mut crypto = rustls::ClientConfig::builder()
+    let crypto = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    crypto.alpn_protocols = vec![b"germina/1".to_vec()];
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|e| anyhow!("Failed to build QUIC client crypto: {e}"))?;
