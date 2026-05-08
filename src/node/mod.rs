@@ -1,10 +1,6 @@
 use anyhow::{Context, anyhow};
 use serde_json::json;
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    time::Duration,
-};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
 pub mod command;
@@ -19,7 +15,7 @@ pub(crate) enum NodeType {
 }
 
 impl NodeType {
-    pub(crate) fn as_cli_value(self) -> &'static str {
+    pub(crate) fn to_string(self) -> &'static str {
         match self {
             NodeType::Client => "client",
             NodeType::Server => "server",
@@ -65,14 +61,14 @@ pub(crate) struct NodeManager {
 }
 
 impl NodeManager {
-    pub fn new() -> Self {
+    pub fn new(orchestrator_addr: SocketAddr) -> Self {
         let (event_tx, event_rx) = mpsc::channel(1024);
         Self {
             nodes: HashMap::new(),
             next_id: 1,
             rpc_seq: 1,
             pending_rpc: HashMap::new(),
-            orchestrator_addr: "127.0.0.1:17171".parse().expect("valid orchestrator address"),
+            orchestrator_addr,
             listener: None,
             event_tx,
             event_rx,
@@ -89,7 +85,10 @@ impl NodeManager {
             .context("Failed to start node orchestrator listener")?;
         self.listener = Some(handle);
 
-        println!("Orchestrator QUIC listener started at {}", self.orchestrator_addr);
+        println!(
+            "Orchestrator QUIC listener started at {}",
+            self.orchestrator_addr
+        );
         Ok(())
     }
 

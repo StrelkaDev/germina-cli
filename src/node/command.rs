@@ -2,13 +2,16 @@ use crate::node::NodeManager;
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum NodeCommand {
+    /// List all known nodes
     #[command(alias = "l")]
     List,
+    /// Spawn a new node process
     #[command(alias = "s")]
     Start {
         #[arg(short = 't', long = "type")]
         node_type: crate::node::NodeType,
     },
+    /// Toggle dev mode on a node
     Dev {
         #[arg(short, long, value_name = "ID", help = "node id")]
         id: u64,
@@ -20,6 +23,7 @@ pub(crate) enum NodeCommand {
         )]
         state: bool,
     },
+    /// Show detailed info about a node
     #[command(alias = "i")]
     Info {
         #[arg(short, long, value_name = "ID", help = "node id")]

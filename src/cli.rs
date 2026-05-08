@@ -1,7 +1,8 @@
+use crate::core::CommandMsg;
 use crate::core::CoreCommand;
 use clap::{CommandFactory, Parser};
-use std::io;
-use tokio::sync::mpsc;
+use std::io::{self, Write};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(clap::Parser)]
 #[command(
@@ -21,14 +22,19 @@ fn print_help() {
     println!("{help}");
 }
 
-pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
-    print_help();
+pub async fn run_loop(
+    tx: mpsc::Sender<CommandMsg>,
+    ready_rx: oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    let _ = ready_rx.await;
     println!("Type 'help' for the list of commands and 'exit' to stop.");
     println!();
 
     let mut line = String::new();
     loop {
         line.clear();
+        print!("germina> ");
+        io::stdout().flush()?;
         let read = io::stdin().read_line(&mut line)?;
         if read == 0 {
             break;
@@ -54,10 +60,12 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
 
         match ReplCommand::try_parse_from(argv) {
             Ok(cmd) => {
-                if let Err(err) = tx.send(cmd.command).await {
+                let (done_tx, done_rx) = oneshot::channel();
+                if let Err(err) = tx.send((cmd.command, done_tx)).await {
                     eprintln!("Failed to deliver command: {err}");
                     break;
                 }
+                let _ = done_rx.await;
             }
             Err(err) => {
                 eprintln!("{err}");

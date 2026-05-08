@@ -1,16 +1,10 @@
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{Mutex, mpsc},
 };
-
-const CERT_DER: &[u8] = include_bytes!("certs/orchestrator_cert.der");
-const KEY_DER: &[u8] = include_bytes!("certs/orchestrator_key.der");
 
 #[derive(Clone, Debug)]
 pub(crate) struct NodeSession {
@@ -69,33 +63,26 @@ pub(crate) struct ListenerHandle {
     _task: tokio::task::JoinHandle<()>,
 }
 
-pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        KEY_DER.to_vec(),
-    ));
+pub(crate) fn generate_self_signed_cert() -> anyhow::Result<(
+    rustls::pki_types::CertificateDer<'static>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+)> {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .context("Failed to generate self-signed certificate")?;
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
+    );
+    Ok((cert_der, key_der))
+}
 
-    let mut config = quinn::ServerConfig::with_single_cert(vec![cert], key)
+pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
+    let (cert_der, key_der) = generate_self_signed_cert()?;
+
+    let mut config = quinn::ServerConfig::with_single_cert(vec![cert_der], key_der)
         .context("Failed to create QUIC server config")?;
     config.transport = Arc::new(quinn::TransportConfig::default());
     Ok(config)
-}
-
-pub(crate) fn client_config() -> anyhow::Result<quinn::ClientConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(cert)
-        .map_err(|e| anyhow!("Failed to add root cert: {e}"))?;
-
-    let crypto = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-
-    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-        .map_err(|e| anyhow!("Failed to build QUIC client crypto: {e}"))?;
-
-    Ok(quinn::ClientConfig::new(Arc::new(quic_crypto)))
 }
 
 pub(crate) async fn write_json_line<T: Serialize>(
@@ -179,8 +166,8 @@ async fn handle_stream(
         return Ok(());
     }
 
-    let hello: StreamHello = serde_json::from_str(hello_line.trim())
-        .context("Failed to decode stream hello")?;
+    let hello: StreamHello =
+        serde_json::from_str(hello_line.trim()).context("Failed to decode stream hello")?;
 
     event_tx
         .send(NodeEvent::Connected {
@@ -191,34 +178,35 @@ async fn handle_stream(
         .ok();
 
     match hello.channel.as_str() {
-        "log" => {
-            loop {
-                let mut line = String::new();
-                let read = reader.read_line(&mut line).await?;
-                if read == 0 {
-                    break;
-                }
-                let record = match serde_json::from_str::<LogRecord>(line.trim()) {
-                    Ok(record) => record,
-                    Err(_) => LogRecord {
-                        timestamp: unix_ts(),
-                        level: "INFO".to_string(),
-                        source: "plain".to_string(),
-                        message: line.trim().to_string(),
-                    },
-                };
-
-                if event_tx
-                    .try_send(NodeEvent::Log {
-                        node_id: hello.node_id,
-                        record,
-                    })
-                    .is_err()
-                {
-                    eprintln!("Dropping remote log due to backpressure for node {}", hello.node_id);
-                }
+        "log" => loop {
+            let mut line = String::new();
+            let read = reader.read_line(&mut line).await?;
+            if read == 0 {
+                break;
             }
-        }
+            let record = match serde_json::from_str::<LogRecord>(line.trim()) {
+                Ok(record) => record,
+                Err(_) => LogRecord {
+                    timestamp: unix_ts(),
+                    level: "INFO".to_string(),
+                    source: "plain".to_string(),
+                    message: line.trim().to_string(),
+                },
+            };
+
+            if event_tx
+                .try_send(NodeEvent::Log {
+                    node_id: hello.node_id,
+                    record,
+                })
+                .is_err()
+            {
+                eprintln!(
+                    "Dropping remote log due to backpressure for node {}",
+                    hello.node_id
+                );
+            }
+        },
         "rpc" => {
             let sender = Arc::new(Mutex::new(send));
             event_tx
