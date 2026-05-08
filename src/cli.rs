@@ -10,8 +10,7 @@ pub(crate) struct ReplCommand {
 }
 
 pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
-    println!("Type commands, for example: node start --node-type client");
-    println!("Type 'exit' to stop.");
+    println!("help для списка команд, exit для остановки");
 
     let mut line = String::new();
     loop {
