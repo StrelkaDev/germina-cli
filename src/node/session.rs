@@ -201,7 +201,7 @@ async fn handle_stream(
                 let record = match serde_json::from_str::<LogRecord>(line.trim()) {
                     Ok(record) => record,
                     Err(_) => LogRecord {
-                        timestamp: unix_timestamp_string(),
+                        timestamp: unix_ts(),
                         level: "INFO".to_string(),
                         source: "plain".to_string(),
                         message: line.trim().to_string(),
@@ -262,7 +262,7 @@ async fn handle_stream(
     Ok(())
 }
 
-fn unix_timestamp_string() -> String {
+fn unix_ts() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let now = SystemTime::now()

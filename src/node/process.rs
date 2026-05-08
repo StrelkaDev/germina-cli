@@ -305,6 +305,7 @@ fn parse_node_type(value: &str) -> anyhow::Result<NodeType> {
     }
 }
 
+/// Monitors the parent-owned stdin pipe so the child node can exit if the orchestrator dies.
 fn watch_parent_exit() -> oneshot::Receiver<()> {
     let (tx, rx) = oneshot::channel();
     std::thread::spawn(move || {
