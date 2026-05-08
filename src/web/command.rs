@@ -9,16 +9,27 @@ impl WebCommand {
     pub(crate) async fn execute(&self, manager: &mut crate::web::WebManager) -> anyhow::Result<()> {
         match self {
             WebCommand::Start => {
-                println!("Starting web server...");
-                // Implement start logic here
+                manager.start().await?;
+                println!(
+                    "Web server start requested at {} (state: {:?})",
+                    manager.bind_addr(),
+                    manager.status()
+                );
             }
             WebCommand::Stop => {
-                println!("Stopping web server...");
-                // Implement stop logic here
+                manager.stop().await?;
+                println!(
+                    "Web server stop requested at {} (state: {:?})",
+                    manager.bind_addr(),
+                    manager.status()
+                );
             }
             WebCommand::Status => {
-                println!("Checking web server status...");
-                // Implement status logic here
+                println!(
+                    "Web server status at {}: {:?}",
+                    manager.bind_addr(),
+                    manager.status()
+                );
             }
         }
         Ok(())

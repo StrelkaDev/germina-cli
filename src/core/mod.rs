@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
@@ -14,18 +14,23 @@ pub(crate) enum CoreCommand {
     },
 }
 
+pub(crate) struct CoreRequest {
+    pub command: CoreCommand,
+    pub completion_tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
 pub struct Core {
     node_manager: crate::node::NodeManager,
     web_manager: crate::web::WebManager,
-    rx: mpsc::Receiver<CoreCommand>,
+    rx: mpsc::Receiver<CoreRequest>,
 }
 
 impl Core {
-    pub fn new() -> (Self, mpsc::Sender<CoreCommand>) {
+    pub fn new(config: crate::config::AppConfig) -> (Self, mpsc::Sender<CoreRequest>) {
         let (tx, rx) = mpsc::channel(100);
         let core = Self {
-            node_manager: crate::node::NodeManager::new(),
-            web_manager: crate::web::WebManager::new(),
+            node_manager: crate::node::NodeManager::new(config.node_bind_addr()),
+            web_manager: crate::web::WebManager::new(config.web_bind_addr()),
             rx,
         };
         (core, tx)
@@ -34,15 +39,17 @@ impl Core {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         self.node_manager.ensure_listener().await?;
 
-        while let Some(command) = self.rx.recv().await {
-            let result = match command {
+        while let Some(request) = self.rx.recv().await {
+            let result = match request.command {
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await,
                 CoreCommand::Web { command } => command.execute(&mut self.web_manager).await,
             };
 
-            if let Err(err) = result {
+            if let Err(err) = &result {
                 eprintln!("Command failed: {err}");
             }
+
+            let _ = request.completion_tx.send(result);
         }
 
         self.node_manager.shutdown().await;
