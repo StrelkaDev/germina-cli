@@ -1,10 +1,13 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use serde_json::json;
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use std::net::SocketAddr;
+use tokio::sync::mpsc;
 
 pub mod command;
+mod event_mapper;
+mod events;
 pub mod process;
+pub mod service;
 pub mod session;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
@@ -15,7 +18,7 @@ pub(crate) enum NodeType {
 }
 
 impl NodeType {
-    pub(crate) fn to_string(self) -> &'static str {
+    pub(crate) fn as_cli_value(self) -> &'static str {
         match self {
             NodeType::Client => "client",
             NodeType::Server => "server",
@@ -41,37 +44,21 @@ pub(crate) struct NodeRuntimeConfig {
     pub orchestrator_addr: SocketAddr,
 }
 
-pub(crate) struct Node {
-    pub config: NodeRuntimeConfig,
-    pub status: NodeStatus,
-    pub process: Option<process::SpawnedNodeProcess>,
-    pub connection: Option<quinn::Connection>,
-    pub session: session::NodeSession,
-}
-
 pub(crate) struct NodeManager {
-    nodes: HashMap<u64, Node>,
-    next_id: u64,
-    rpc_seq: u64,
-    pending_rpc: HashMap<u64, oneshot::Sender<session::RpcMessage>>,
-    orchestrator_addr: SocketAddr,
-    listener: Option<session::ListenerHandle>,
-    event_tx: mpsc::Sender<session::NodeEvent>,
-    event_rx: mpsc::Receiver<session::NodeEvent>,
+    service: service::NodeService,
+    listener: Option<session::listener::ListenerHandle>,
+    transport_tx: mpsc::Sender<session::events::TransportEvent>,
+    transport_rx: mpsc::Receiver<session::events::TransportEvent>,
 }
 
 impl NodeManager {
     pub fn new(orchestrator_addr: SocketAddr) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(1024);
+        let (transport_tx, transport_rx) = mpsc::channel(1024);
         Self {
-            nodes: HashMap::new(),
-            next_id: 1,
-            rpc_seq: 1,
-            pending_rpc: HashMap::new(),
-            orchestrator_addr,
+            service: service::NodeService::new(orchestrator_addr),
             listener: None,
-            event_tx,
-            event_rx,
+            transport_tx,
+            transport_rx,
         }
     }
 
@@ -80,84 +67,60 @@ impl NodeManager {
             return Ok(());
         }
 
-        let handle = session::start_listener(self.orchestrator_addr, self.event_tx.clone())
+        let bind_addr = self.service.orchestrator_addr();
+        let handle = session::listener::start_listener(bind_addr, self.transport_tx.clone())
             .await
             .context("Failed to start node orchestrator listener")?;
         self.listener = Some(handle);
 
-        println!(
-            "Orchestrator QUIC listener started at {}",
-            self.orchestrator_addr
-        );
+        println!("Orchestrator QUIC listener started at {}", bind_addr);
         Ok(())
     }
 
     async fn refresh_events(&mut self) {
-        while let Ok(event) = self.event_rx.try_recv() {
-            self.handle_event(event);
+        while let Ok(event) = self.transport_rx.try_recv() {
+            let domain_event = event_mapper::map_transport_event(event);
+            self.handle_event(domain_event);
         }
     }
 
-    fn handle_event(&mut self, event: session::NodeEvent) {
+    fn handle_event(&mut self, event: events::NodeEvent) {
         match event {
-            session::NodeEvent::Connected {
+            events::NodeEvent::Connected {
                 node_id,
                 connection,
             } => {
-                if let Some(node) = self.nodes.get_mut(&node_id) {
-                    node.connection = Some(connection);
-                    node.status = NodeStatus::Connected;
-                }
+                self.service.mark_connected(node_id, connection);
             }
-            session::NodeEvent::RpcStreamReady { node_id, sender } => {
-                if let Some(node) = self.nodes.get_mut(&node_id) {
-                    node.session.rpc_sender = Some(sender);
-                }
+            events::NodeEvent::RpcStreamReady { node_id, sender } => {
+                self.service.set_rpc_sender(node_id, sender);
             }
-            session::NodeEvent::RpcIncoming { node_id, message } => {
-                if message.method.is_none() {
-                    if let Some(request_id) = message.request_id
-                        && let Some(tx) = self.pending_rpc.remove(&request_id)
-                    {
-                        let _ = tx.send(message);
-                    }
-                } else {
+            events::NodeEvent::RpcIncoming { node_id, message } => {
+                if let Some(incoming_call) = self.service.route_incoming_rpc(message) {
                     println!(
                         "[node-{node_id} rpc] incoming call: {}",
-                        serde_json::to_string(&message)
+                        serde_json::to_string(&incoming_call)
                             .unwrap_or_else(|_| "<invalid rpc json>".to_string())
                     );
                 }
             }
-            session::NodeEvent::Log { node_id, record } => {
+            events::NodeEvent::Log { node_id, record } => {
                 println!(
                     "[node-{node_id} remote-log {} {} {}] {}",
                     record.timestamp, record.level, record.source, record.message
                 );
             }
-            session::NodeEvent::Disconnected { node_id, reason } => {
-                if let Some(node) = self.nodes.get_mut(&node_id) {
-                    node.status = NodeStatus::Disconnected;
-                    node.connection = None;
-                    node.session.rpc_sender = None;
-                    println!("Node {} disconnected: {}", node_id, reason);
-                }
+            events::NodeEvent::Disconnected { node_id, reason } => {
+                self.service.mark_disconnected(node_id);
+                println!("Node {} disconnected: {}", node_id, reason);
             }
         }
     }
 
     pub fn list(&mut self) {
         println!("Connected/known nodes:");
-        for node in self.nodes.values() {
-            println!(
-                "ID: {}, Type: {:?}, Name: {}, Status: {:?}, Dev: {}, RPC: {}",
-                node.config.id,
-                node.config.node_type,
-                node.config.name,
-                node.status,
-                node.config.dev_mode,
-                node.session.rpc_sender.is_some()
-            );
+        for line in self.service.list_lines() {
+            println!("{line}");
         }
     }
 
@@ -165,23 +128,8 @@ impl NodeManager {
         self.ensure_listener().await?;
         self.refresh_events().await;
 
-        let node_id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("Node ID overflow"))?;
-
-        if self.nodes.contains_key(&node_id) {
-            return Err(anyhow!("Node with id {node_id} already exists"));
-        }
-
-        let config = NodeRuntimeConfig {
-            id: node_id,
-            node_type,
-            name: format!("node-{node_id}"),
-            dev_mode: false,
-            orchestrator_addr: self.orchestrator_addr,
-        };
+        let node_id = self.service.allocate_node_id()?;
+        let config = self.service.build_runtime_config(node_id, node_type);
 
         let process = process::spawn_node_process(
             config.orchestrator_addr,
@@ -193,19 +141,10 @@ impl NodeManager {
         let pid = process
             .child
             .id()
-            .map(|pid| pid.to_string())
+            .map(|child_id| child_id.to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        self.nodes.insert(
-            node_id,
-            Node {
-                config,
-                status: NodeStatus::Starting,
-                process: Some(process),
-                connection: None,
-                session: session::NodeSession { rpc_sender: None },
-            },
-        );
+        self.service.register_started_node(config, process);
 
         println!("Started node {node_id} ({node_type:?}), pid={pid}");
         Ok(())
@@ -213,26 +152,17 @@ impl NodeManager {
 
     pub async fn set_dev_mode(&mut self, id: u64, state: bool) -> anyhow::Result<()> {
         self.refresh_events().await;
-
-        {
-            let node = self
-                .nodes
-                .get_mut(&id)
-                .ok_or_else(|| anyhow!("Node {id} not found"))?;
-            node.config.dev_mode = state;
-        }
+        self.service.set_dev_mode_local(id, state)?;
 
         let response = self
-            .send_rpc_request(id, "set_dev", json!({ "state": state }))
+            .send_rpc_request(id, "set_dev", self.service.build_set_dev_params(state))
             .await;
 
         match response {
             Ok(Some(msg)) => println!("Node {id} set_dev response: {:?}", msg.result),
             Ok(None) => println!("Node {id} not connected via RPC yet; only local state updated"),
             Err(err) => {
-                if let Some(node) = self.nodes.get_mut(&id) {
-                    node.status = NodeStatus::Failed;
-                }
+                self.service.mark_failed(id);
                 return Err(err);
             }
         }
@@ -243,24 +173,7 @@ impl NodeManager {
     pub async fn info(&mut self, id: u64) -> anyhow::Result<()> {
         self.refresh_events().await;
 
-        let node = self
-            .nodes
-            .get(&id)
-            .ok_or_else(|| anyhow!("Node {id} not found"))?;
-
-        println!(
-            "Node {} => type={:?}, name={}, status={:?}, dev={}, pid={}",
-            node.config.id,
-            node.config.node_type,
-            node.config.name,
-            node.status,
-            node.config.dev_mode,
-            node.process
-                .as_ref()
-                .and_then(|p| p.child.id())
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        );
+        println!("{}", self.service.format_info_line(id)?);
 
         match self.send_rpc_request(id, "info", json!({})).await {
             Ok(Some(msg)) => {
@@ -282,73 +195,17 @@ impl NodeManager {
         node_id: u64,
         method: &str,
         params: serde_json::Value,
-    ) -> anyhow::Result<Option<session::RpcMessage>> {
+    ) -> anyhow::Result<Option<session::protocol::RpcMessage>> {
         self.refresh_events().await;
 
-        let sender = match self
-            .nodes
-            .get(&node_id)
-            .and_then(|n| n.session.rpc_sender.clone())
-        {
-            Some(sender) => sender,
-            None => return Ok(None),
-        };
+        let response = self.service.send_rpc_request(node_id, method, params).await;
 
-        let request_id = self.rpc_seq;
-        self.rpc_seq = self.rpc_seq.saturating_add(1);
-
-        let request = session::RpcMessage {
-            request_id: Some(request_id),
-            method: Some(method.to_string()),
-            params: Some(params),
-            result: None,
-            error: None,
-        };
-
-        let (tx, rx) = oneshot::channel();
-        self.pending_rpc.insert(request_id, tx);
-
-        {
-            let mut guard = sender.lock().await;
-            session::write_json_line(&mut guard, &request)
-                .await
-                .context("Failed to write RPC request")?;
-        }
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        let mut rx = rx;
-
-        loop {
-            tokio::select! {
-                result = &mut rx => {
-                    return match result {
-                        Ok(message) => Ok(Some(message)),
-                        Err(_) => Err(anyhow!("RPC response channel closed")),
-                    };
-                }
-                maybe_event = self.event_rx.recv() => {
-                    if let Some(event) = maybe_event {
-                        self.handle_event(event);
-                    }
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    self.pending_rpc.remove(&request_id);
-                    return Err(anyhow!("RPC timeout for method {method}"));
-                }
-            }
-        }
+        self.refresh_events().await;
+        response
     }
 
     pub async fn shutdown(&mut self) {
         self.refresh_events().await;
-        for node in self.nodes.values_mut() {
-            if let Some(process) = node.process.as_mut() {
-                let _ = process.child.start_kill();
-                let _ = process.child.wait().await;
-            }
-            node.status = NodeStatus::Disconnected;
-            node.connection = None;
-            node.session.rpc_sender = None;
-        }
+        self.service.shutdown().await;
     }
 }

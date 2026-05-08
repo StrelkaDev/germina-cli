@@ -1,7 +1,4 @@
-use std::net::SocketAddr;
 use tokio::sync::{mpsc, oneshot};
-
-pub(crate) type CommandMsg = (CoreCommand, oneshot::Sender<()>);
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
@@ -17,37 +14,42 @@ pub(crate) enum CoreCommand {
     },
 }
 
+pub(crate) struct CoreRequest {
+    pub command: CoreCommand,
+    pub completion_tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
 pub struct Core {
     node_manager: crate::node::NodeManager,
     web_manager: crate::web::WebManager,
-    rx: mpsc::Receiver<CommandMsg>,
+    rx: mpsc::Receiver<CoreRequest>,
 }
 
 impl Core {
-    pub fn new(node_addr: SocketAddr, web_addr: SocketAddr) -> (Self, mpsc::Sender<CommandMsg>) {
+    pub fn new(config: crate::config::AppConfig) -> (Self, mpsc::Sender<CoreRequest>) {
         let (tx, rx) = mpsc::channel(100);
         let core = Self {
-            node_manager: crate::node::NodeManager::new(node_addr),
-            web_manager: crate::web::WebManager::new(web_addr),
+            node_manager: crate::node::NodeManager::new(config.node_bind_addr()),
+            web_manager: crate::web::WebManager::new(config.web_bind_addr()),
             rx,
         };
         (core, tx)
     }
 
-    pub async fn run(&mut self, ready_tx: oneshot::Sender<()>) -> anyhow::Result<()> {
+    pub async fn run(&mut self) -> anyhow::Result<()> {
         self.node_manager.ensure_listener().await?;
-        let _ = ready_tx.send(());
 
-        while let Some((command, done_tx)) = self.rx.recv().await {
-            let result = match command {
+        while let Some(request) = self.rx.recv().await {
+            let result = match request.command {
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await,
                 CoreCommand::Web { command } => command.execute(&mut self.web_manager).await,
             };
 
-            if let Err(err) = result {
+            if let Err(err) = &result {
                 eprintln!("Command failed: {err}");
             }
-            let _ = done_tx.send(());
+
+            let _ = request.completion_tx.send(result);
         }
 
         self.node_manager.shutdown().await;
