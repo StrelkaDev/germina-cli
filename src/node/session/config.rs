@@ -1,13 +1,35 @@
 use anyhow::{Context, anyhow};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-const CERT_DER: &[u8] = include_bytes!("../certs/orchestrator_cert.der");
-const KEY_DER: &[u8] = include_bytes!("../certs/orchestrator_key.der");
+struct GeneratedCert {
+    cert_der: Vec<u8>,
+    key_der: Vec<u8>,
+}
+
+static CERT: OnceLock<GeneratedCert> = OnceLock::new();
+
+fn get_or_generate_cert() -> anyhow::Result<&'static GeneratedCert> {
+    if let Some(cert) = CERT.get() {
+        return Ok(cert);
+    }
+
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["germina-orchestrator".to_string()])
+            .context("Failed to generate self-signed certificate")?;
+
+    let generated = GeneratedCert {
+        cert_der: cert.der().to_vec(),
+        key_der: signing_key.serialize_der(),
+    };
+
+    Ok(CERT.get_or_init(|| generated))
+}
 
 pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
+    let generated = get_or_generate_cert()?;
+    let cert = rustls::pki_types::CertificateDer::from(generated.cert_der.clone());
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        KEY_DER.to_vec(),
+        generated.key_der.clone(),
     ));
 
     let mut config = quinn::ServerConfig::with_single_cert(vec![cert], key)
@@ -17,7 +39,8 @@ pub(crate) fn server_config() -> anyhow::Result<quinn::ServerConfig> {
 }
 
 pub(crate) fn client_config() -> anyhow::Result<quinn::ClientConfig> {
-    let cert = rustls::pki_types::CertificateDer::from(CERT_DER.to_vec());
+    let generated = get_or_generate_cert()?;
+    let cert = rustls::pki_types::CertificateDer::from(generated.cert_der.clone());
     let mut roots = rustls::RootCertStore::empty();
     roots
         .add(cert)
