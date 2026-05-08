@@ -31,6 +31,8 @@ impl Core {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        self.node_manager.ensure_listener().await?;
+
         while let Some(command) = self.rx.recv().await {
             match command {
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await?,
@@ -38,6 +40,8 @@ impl Core {
                 CoreCommand::Exit => break,
             }
         }
+
+        self.node_manager.shutdown().await;
         Ok(())
     }
 }
