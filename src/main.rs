@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod core;
 mod node;
+mod ui;
 mod util;
 mod version;
 mod web;
@@ -14,12 +15,14 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = config::AppConfig::parse()?;
 
-    println!("Germina CLI {}", version::VERSION);
+    ui::print_line(format!("Germina CLI {}", version::VERSION))?;
 
     let (mut core, tx) = core::Core::new(app_config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
+        core.initialize().await?;
+
         let core_task = tokio::spawn(async move { core.run().await });
         let cli_result = cli::run_loop(tx).await;
 

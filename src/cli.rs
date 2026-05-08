@@ -24,7 +24,7 @@ enum ParsedInput {
 fn print_help() {
     let mut cmd = ReplCommand::command();
     let help = cmd.render_help();
-    println!("{help}");
+    let _ = crate::ui::print_line(help.to_string());
 }
 
 fn parse_input(input: &str) -> Result<ParsedInput, clap::Error> {
@@ -63,13 +63,18 @@ async fn dispatch_command(
 
 pub async fn run_loop(tx: mpsc::Sender<CoreRequest>) -> anyhow::Result<()> {
     print_help();
-    println!("Type 'help' for the list of commands and 'exit' to stop.");
-    println!();
+    crate::ui::print_line("Type 'help' for the list of commands and 'exit' to stop.")?;
+    crate::ui::print_line("")?;
 
     let mut line = String::new();
     loop {
         line.clear();
+
+        crate::ui::print_prompt()?;
+
         let read = io::stdin().read_line(&mut line)?;
+        crate::ui::set_prompt_visible(false);
+
         if read == 0 {
             break;
         }
@@ -83,16 +88,15 @@ pub async fn run_loop(tx: mpsc::Sender<CoreRequest>) -> anyhow::Result<()> {
             Ok(ParsedInput::Exit) => break,
             Ok(ParsedInput::Help) => {
                 print_help();
-                println!("Type 'exit' to stop.");
-                println!();
+                crate::ui::print_line("Type 'exit' to stop.")?;
+                crate::ui::print_line("")?;
             }
             Ok(ParsedInput::Command(command)) => {
                 if let Err(err) = dispatch_command(&tx, command).await {
-                    eprintln!("{err}");
-                    break;
+                    crate::ui::print_line(err.to_string())?;
                 }
             }
-            Err(err) => eprintln!("{err}"),
+            Err(err) => crate::ui::print_line(err.to_string())?,
         }
     }
 

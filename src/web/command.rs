@@ -14,26 +14,26 @@ impl WebCommand {
         match self {
             WebCommand::Start => {
                 manager.start().await?;
-                println!(
+                let _ = crate::ui::print_line(format!(
                     "Web server start requested at {} (state: {:?})",
                     manager.bind_addr(),
                     manager.status()
-                );
+                ));
             }
             WebCommand::Stop => {
                 manager.stop().await?;
-                println!(
+                let _ = crate::ui::print_line(format!(
                     "Web server stop requested at {} (state: {:?})",
                     manager.bind_addr(),
                     manager.status()
-                );
+                ));
             }
             WebCommand::Status => {
-                println!(
+                let _ = crate::ui::print_line(format!(
                     "Web server status at {}: {:?}",
                     manager.bind_addr(),
                     manager.status()
-                );
+                ));
             }
         }
         Ok(())

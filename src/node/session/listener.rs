@@ -22,11 +22,11 @@ pub(crate) async fn start_listener(
                 match incoming.await {
                     Ok(connection) => {
                         if let Err(err) = handle_connection(connection, tx).await {
-                            eprintln!("Connection handling error: {err}");
+                            let _ = crate::ui::print_line(format!("Connection handling error: {err}"));
                         }
                     }
                     Err(err) => {
-                        eprintln!("Incoming connection failed: {err}");
+                        let _ = crate::ui::print_line(format!("Incoming connection failed: {err}"));
                     }
                 }
             });
@@ -48,7 +48,7 @@ async fn handle_connection(
         let (send, recv) = match next {
             Ok(streams) => streams,
             Err(err) => {
-                eprintln!("Connection stream accept error: {err}");
+                let _ = crate::ui::print_line(format!("Connection stream accept error: {err}"));
                 break;
             }
         };
@@ -58,7 +58,7 @@ async fn handle_connection(
         tokio::spawn(async move {
             if let Err(err) = crate::node::session::handlers::handle_stream(conn, send, recv, tx).await
             {
-                eprintln!("Stream handling error: {err}");
+                let _ = crate::ui::print_line(format!("Stream handling error: {err}"));
             }
         });
     }

@@ -46,7 +46,10 @@ impl NodeManager {
             .context("Failed to start node orchestrator listener")?;
         self.listener = Some(handle);
 
-        println!("Orchestrator QUIC listener started at {}", bind_addr);
+        let _ = crate::ui::print_line(format!(
+            "Orchestrator QUIC listener started at {}",
+            bind_addr
+        ));
         Ok(())
     }
 
@@ -70,30 +73,30 @@ impl NodeManager {
             }
             events::NodeEvent::RpcIncoming { node_id, message } => {
                 if let Some(incoming_call) = self.service.route_incoming_rpc(message) {
-                    println!(
+                    let _ = crate::ui::print_line(format!(
                         "[node-{node_id} rpc] incoming call: {}",
                         serde_json::to_string(&incoming_call)
                             .unwrap_or_else(|_| "<invalid rpc json>".to_string())
-                    );
+                    ));
                 }
             }
             events::NodeEvent::Log { node_id, record } => {
-                println!(
+                let _ = crate::ui::print_line(format!(
                     "[node-{node_id} remote-log {} {} {}] {}",
                     record.timestamp, record.level, record.source, record.message
-                );
+                ));
             }
             events::NodeEvent::Disconnected { node_id, reason } => {
                 self.service.mark_disconnected(node_id);
-                println!("Node {} disconnected: {}", node_id, reason);
+                let _ = crate::ui::print_line(format!("Node {} disconnected: {}", node_id, reason));
             }
         }
     }
 
     pub fn list(&mut self) {
-        println!("Connected/known nodes:");
+        let _ = crate::ui::print_line("Connected/known nodes:");
         for line in self.service.list_lines() {
-            println!("{line}");
+            let _ = crate::ui::print_line(line);
         }
     }
 
@@ -106,8 +109,15 @@ impl NodeManager {
             .await;
 
         match response {
-            Ok(Some(msg)) => println!("Node {id} set_dev response: {:?}", msg.result),
-            Ok(None) => println!("Node {id} not connected via RPC yet; only local state updated"),
+            Ok(Some(msg)) => {
+                let _ =
+                    crate::ui::print_line(format!("Node {id} set_dev response: {:?}", msg.result));
+            }
+            Ok(None) => {
+                let _ = crate::ui::print_line(format!(
+                    "Node {id} not connected via RPC yet; only local state updated"
+                ));
+            }
             Err(err) => {
                 self.service.mark_failed(id);
                 return Err(err);
@@ -120,18 +130,25 @@ impl NodeManager {
     pub async fn info(&mut self, id: u64) -> anyhow::Result<()> {
         self.refresh_events().await;
 
-        println!("{}", self.service.format_info_line(id)?);
+        let _ = crate::ui::print_line(self.service.format_info_line(id)?);
 
         match self.send_rpc_request(id, "info", json!({})).await {
             Ok(Some(msg)) => {
-                println!(
+                let _ = crate::ui::print_line(format!(
                     "Node {} rpc info: {}",
                     id,
                     serde_json::to_string_pretty(&msg.result.unwrap_or(json!(null)))?
-                );
+                ));
             }
-            Ok(None) => println!("Node {} rpc info unavailable: no RPC stream", id),
-            Err(err) => println!("Node {} rpc info error: {err}", id),
+            Ok(None) => {
+                let _ = crate::ui::print_line(format!(
+                    "Node {} rpc info unavailable: no RPC stream",
+                    id
+                ));
+            }
+            Err(err) => {
+                let _ = crate::ui::print_line(format!("Node {} rpc info error: {err}", id));
+            }
         }
 
         Ok(())

@@ -37,22 +37,20 @@ impl Core {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
-        self.node_manager.ensure_listener().await?;
-
         while let Some(request) = self.rx.recv().await {
             let result = match request.command {
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await,
                 CoreCommand::Web { command } => command.execute(&mut self.web_manager).await,
             };
 
-            if let Err(err) = &result {
-                eprintln!("Command failed: {err}");
-            }
-
             let _ = request.completion_tx.send(result);
         }
 
         self.node_manager.shutdown().await;
         Ok(())
+    }
+
+    pub async fn initialize(&mut self) -> anyhow::Result<()> {
+        self.node_manager.ensure_listener().await
     }
 }
