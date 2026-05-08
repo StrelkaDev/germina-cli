@@ -22,7 +22,7 @@ fn print_help() {
 
 pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
     print_help();
-    println!("Для вызова справки введите: help");
+    println!("Type 'help' for the list of commands and 'exit' to stop.");
     println!();
 
     let mut line = String::new();
@@ -46,6 +46,8 @@ pub async fn run_loop(tx: mpsc::Sender<CoreCommand>) -> anyhow::Result<()> {
 
         if input.eq_ignore_ascii_case("help") {
             print_help();
+            println!("Type 'exit' to stop.");
+            println!();
             continue;
         }
 

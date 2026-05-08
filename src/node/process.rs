@@ -7,14 +7,16 @@ use serde_json::json;
 use std::{
     io::{BufRead, BufReader},
     net::SocketAddr,
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
+use tokio::sync::oneshot;
 
 pub(crate) struct SpawnedNodeProcess {
     pub child: Child,
+    _parent_stdin_guard: ChildStdin,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +94,7 @@ pub(crate) fn spawn_node_process(
         .arg(node_id.to_string())
         .arg("--node-type")
         .arg(node_type.as_cli_value())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -100,9 +103,16 @@ pub(crate) fn spawn_node_process(
     }
 
     let mut child = command.spawn().context("Failed to spawn node child process")?;
+    let parent_stdin_guard = child
+        .stdin
+        .take()
+        .context("Failed to capture child stdin guard")?;
     attach_stdio_forwarders(node_id, node_type, &mut child);
 
-    Ok(SpawnedNodeProcess { child })
+    Ok(SpawnedNodeProcess {
+        child,
+        _parent_stdin_guard: parent_stdin_guard,
+    })
 }
 
 fn attach_stdio_forwarders(node_id: u64, node_type: NodeType, child: &mut Child) {
@@ -133,17 +143,25 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
         args.node_id, args.node_type, args.dev, args.orchestrator_addr
     );
 
+    let mut parent_exit = watch_parent_exit();
+
     let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
         .context("Failed to create QUIC client endpoint")?;
     endpoint.set_default_client_config(client_config()?);
 
-    let connection = endpoint
-        .connect(args.orchestrator_addr, "localhost")
-        .context("Failed to connect to orchestrator")?
-        .await
-        .context("QUIC connect handshake failed")?;
+    let connection = tokio::select! {
+        result = endpoint
+            .connect(args.orchestrator_addr, "localhost")
+            .context("Failed to connect to orchestrator")? => {
+            result.context("QUIC connect handshake failed")?
+        }
+        _ = &mut parent_exit => return Ok(()),
+    };
 
-    let (mut log_send, _log_recv) = connection.open_bi().await?;
+    let (mut log_send, _log_recv) = tokio::select! {
+        result = connection.open_bi() => result?,
+        _ = &mut parent_exit => return Ok(()),
+    };
     write_json_line(
         &mut log_send,
         &StreamHello {
@@ -164,7 +182,10 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
     };
     write_json_line(&mut log_send, &startup_log).await?;
 
-    let (mut rpc_send, rpc_recv) = connection.open_bi().await?;
+    let (mut rpc_send, rpc_recv) = tokio::select! {
+        result = connection.open_bi() => result?,
+        _ = &mut parent_exit => return Ok(()),
+    };
     write_json_line(
         &mut rpc_send,
         &StreamHello {
@@ -179,7 +200,10 @@ pub(crate) async fn run_node_runtime(args: NodeRuntimeArgs) -> anyhow::Result<()
 
     loop {
         let mut line = String::new();
-        let read = reader.read_line(&mut line).await?;
+        let read = tokio::select! {
+            result = reader.read_line(&mut line) => result?,
+            _ = &mut parent_exit => break,
+        };
         if read == 0 {
             break;
         }
@@ -279,6 +303,16 @@ fn parse_node_type(value: &str) -> anyhow::Result<NodeType> {
         "tools" => Ok(NodeType::Tools),
         _ => Err(anyhow!("Invalid node type: {value}")),
     }
+}
+
+fn watch_parent_exit() -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
+        let _ = std::io::copy(&mut stdin, &mut std::io::sink());
+        let _ = tx.send(());
+    });
+    rx
 }
 
 fn unix_ts() -> String {
