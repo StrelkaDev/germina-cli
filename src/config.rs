@@ -1,10 +1,18 @@
 use anyhow::anyhow;
 use clap::Parser;
 use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Clone, Debug)]
 #[command(name = "germina", about = "Germina CLI")]
 struct AppArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Runtime root directory (defaults to current executable directory)"
+    )]
+    path: Option<PathBuf>,
+
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
 
@@ -17,6 +25,7 @@ struct AppArgs {
 
 #[derive(Clone, Debug)]
 pub(crate) struct AppConfig {
+    path: Option<PathBuf>,
     host: IpAddr,
     node_port: u16,
     web_port: u16,
@@ -40,10 +49,15 @@ impl AppConfig {
         }
 
         Ok(Self {
+            path: args.path,
             host: args.host,
             node_port: args.node_port,
             web_port: args.web_port,
         })
+    }
+
+    pub(crate) fn root_path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     pub(crate) fn node_bind_addr(&self) -> SocketAddr {

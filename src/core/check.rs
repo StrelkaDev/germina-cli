@@ -7,13 +7,6 @@ use tokio::time::{Duration, timeout};
 #[derive(Args, Clone, Debug)]
 pub(crate) struct CheckCommand {
     #[arg(
-        long,
-        value_name = "PATH",
-        help = "Root directory to validate. Defaults to directory containing current binary"
-    )]
-    root: Option<PathBuf>,
-
-    #[arg(
         long = "runtime-version",
         value_name = "VERSION",
         default_value = env!("CARGO_PKG_VERSION"),
@@ -28,36 +21,27 @@ enum ComponentKind {
 }
 
 impl CheckCommand {
-    pub(crate) async fn execute(&self) -> anyhow::Result<()> {
-        let root = resolve_root(&self.root)?;
-
+    pub(crate) async fn execute(&self, root: &Path) -> anyhow::Result<()> {
         crate::ui::print_line(format!(
             "Checking runtime hierarchy at {}",
-            display_path(root.as_path())
+            display_path(root)
         ))?;
 
         let mut errors = Vec::new();
 
         let runtime_bin = current_runtime_binary()?;
-        if self.root.is_none() {
-            let runtime_parent = runtime_bin
-                .parent()
-                .ok_or_else(|| anyhow!("Current executable has no parent directory"))?;
+        let runtime_parent = runtime_bin
+            .parent()
+            .ok_or_else(|| anyhow!("Current executable has no parent directory"))?;
 
-            if !paths_equal(runtime_parent, root.as_path())? {
-                errors.push(format!(
-                    "Current binary is outside root: {}",
-                    display_path(runtime_bin.as_path())
-                ));
-            } else {
-                crate::ui::print_line(format!(
-                    "[ok] germina binary: {}",
-                    display_path(runtime_bin.as_path())
-                ))?;
-            }
-        } else {
+        if !paths_equal(runtime_parent, root)? {
             crate::ui::print_line(format!(
                 "[ok] germina binary detected: {}",
+                display_path(runtime_bin.as_path())
+            ))?;
+        } else {
+            crate::ui::print_line(format!(
+                "[ok] germina binary: {}",
                 display_path(runtime_bin.as_path())
             ))?;
         }
@@ -94,20 +78,6 @@ impl CheckCommand {
             errors.len()
         ))
     }
-}
-
-fn resolve_root(configured_root: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    let raw_root = if let Some(root) = configured_root {
-        root.clone()
-    } else {
-        let exe = std::env::current_exe().context("Failed to determine current executable")?;
-        exe.parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| anyhow!("Current executable has no parent directory"))?
-    };
-
-    std::fs::canonicalize(&raw_root)
-        .with_context(|| format!("Failed to resolve root path {}", raw_root.display()))
 }
 
 fn current_runtime_binary() -> anyhow::Result<PathBuf> {

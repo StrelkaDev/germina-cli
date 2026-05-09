@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
 
     ui::print_line(format!("Germina CLI {}", version::VERSION))?;
 
-    let (mut core, tx) = core::Core::new(app_config);
+    let (mut core, tx) = core::Core::new(app_config)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
