@@ -1,7 +1,14 @@
+mod check;
+
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub(crate) enum CoreCommand {
+    /// Validate runtime folder hierarchy and component availability
+    Check {
+        #[command(flatten)]
+        command: check::CheckCommand,
+    },
     /// Manage node sessions
     Node {
         #[command(subcommand)]
@@ -39,6 +46,7 @@ impl Core {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         while let Some(request) = self.rx.recv().await {
             let result = match request.command {
+                CoreCommand::Check { command } => command.execute().await,
                 CoreCommand::Node { command } => command.execute(&mut self.node_manager).await,
                 CoreCommand::Web { command } => command.execute(&mut self.web_manager).await,
             };
