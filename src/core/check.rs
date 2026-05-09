@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use clap::Args;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
@@ -47,6 +48,11 @@ impl CheckCommand {
         }
 
         check_modules_dir(&root, &mut errors)?;
+
+        let cmake_sources = discover_cmake_source_components(root);
+        if !cmake_sources.is_empty() {
+            check_native_toolchain(&cmake_sources, &mut errors).await?;
+        }
 
         check_component(
             &root,
@@ -198,6 +204,110 @@ fn check_source_folder(
         display_path(path)
     ));
     Ok(())
+}
+
+fn discover_cmake_source_components(root: &Path) -> Vec<&'static str> {
+    ["germina-client", "germina-server"]
+        .iter()
+        .copied()
+        .filter(|component| root.join(component).join("CMakeLists.txt").is_file())
+        .collect()
+}
+
+async fn check_native_toolchain(
+    cmake_components: &[&str],
+    errors: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    crate::ui::print_line(format!(
+        "Checking native toolchain for CMake components: {}",
+        cmake_components.join(", ")
+    ))?;
+
+    if let Some(version) = probe_command_version("cmake", &["--version"]).await? {
+        crate::ui::print_line(format!("[ok] cmake: {version}"))?;
+    } else {
+        errors.push("Missing required tool 'cmake' in PATH".to_string());
+    }
+
+    if let Some(version) = probe_command_version("clang", &["--version"]).await? {
+        crate::ui::print_line(format!("[ok] clang: {version}"))?;
+    } else {
+        errors.push("Missing required tool 'clang' in PATH".to_string());
+    }
+
+    if let Some(version) = probe_command_version("clang++", &["--version"]).await? {
+        crate::ui::print_line(format!("[ok] clang++: {version}"))?;
+    } else {
+        errors.push("Missing required tool 'clang++' in PATH".to_string());
+    }
+
+    #[cfg(windows)]
+    let compiler_candidates: &[(&str, &[&str])] = &[
+        ("cl", &["/?"]),
+        ("clang", &["--version"]),
+        ("gcc", &["--version"]),
+    ];
+
+    #[cfg(not(windows))]
+    let compiler_candidates: &[(&str, &[&str])] = &[
+        ("cc", &["--version"]),
+        ("clang", &["--version"]),
+        ("gcc", &["--version"]),
+    ];
+
+    let mut detected = None;
+    for (tool, args) in compiler_candidates {
+        if let Some(version) = probe_command_version(tool, args).await? {
+            detected = Some((*tool, version));
+            break;
+        }
+    }
+
+    if let Some((tool, version)) = detected {
+        crate::ui::print_line(format!("[ok] C/C++ compiler: {tool} ({version})"))?;
+    } else {
+        #[cfg(windows)]
+        let expected = "cl, clang, gcc";
+        #[cfg(not(windows))]
+        let expected = "cc, clang, gcc";
+        errors.push(format!(
+            "No C/C++ compiler found in PATH (expected one of: {expected})"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn probe_command_version(command: &str, args: &[&str]) -> anyhow::Result<Option<String>> {
+    match timeout(
+        Duration::from_secs(3),
+        Command::new(command).args(args).output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => {
+            let mut text = String::new();
+            text.push_str(&String::from_utf8_lossy(&output.stdout));
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+
+            let version_line = text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| line.to_string())
+                .unwrap_or_else(|| "version unavailable".to_string());
+
+            Ok(Some(version_line))
+        }
+        Ok(Err(err)) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Ok(Err(err)) => Err(anyhow!(
+            "Failed to probe command '{}' ({}): {}",
+            command,
+            args.join(" "),
+            err
+        )),
+        Err(_) => Ok(None),
+    }
 }
 
 async fn check_binary_runtime_version(

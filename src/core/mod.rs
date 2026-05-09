@@ -1,4 +1,5 @@
 mod check;
+mod launch;
 
 use anyhow::{Context, anyhow};
 use std::path::Path;
@@ -41,6 +42,8 @@ impl Core {
         config: crate::config::AppConfig,
     ) -> anyhow::Result<(Self, mpsc::Sender<CoreRequest>)> {
         let root_path = resolve_root_path(&config)?;
+        let cli_endpoint = config.cli_endpoint();
+        launch::ensure_launch_configs(root_path.as_path(), cli_endpoint.as_str())?;
         let (tx, rx) = mpsc::channel(100);
         let core = Self {
             root_path,

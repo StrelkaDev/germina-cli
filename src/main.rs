@@ -16,6 +16,8 @@ fn main() -> anyhow::Result<()> {
     let app_config = config::AppConfig::parse()?;
 
     ui::print_line(format!("Germina CLI {}", version::VERSION))?;
+    ui::print_line(app_config.host_startup_summary())?;
+    ui::print_line(format!("Node endpoint: {}", app_config.cli_endpoint()))?;
 
     let (mut core, tx) = core::Core::new(app_config)?;
 
