@@ -229,6 +229,20 @@ async fn check_native_toolchain(
         errors.push("Missing required tool 'cmake' in PATH".to_string());
     }
 
+    if let Some(version) = probe_command_version("cargo", &["--version"]).await? {
+        crate::ui::print_line(format!("[ok] cargo: {version}"))?;
+    } else {
+        errors.push("Missing required tool 'cargo' in PATH".to_string());
+    }
+
+    if let Some(version) = probe_command_version("ninja", &["--version"]).await? {
+        crate::ui::print_line(format!("[ok] ninja: {version}"))?;
+    } else {
+        errors.push("Missing required tool 'ninja' in PATH".to_string());
+    }
+
+    check_windows_long_paths(errors).await?;
+
     if let Some(version) = probe_command_version("clang", &["--version"]).await? {
         crate::ui::print_line(format!("[ok] clang: {version}"))?;
     } else {
@@ -275,6 +289,52 @@ async fn check_native_toolchain(
         ));
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn check_windows_long_paths(errors: &mut Vec<String>) -> anyhow::Result<()> {
+    let output = timeout(
+        Duration::from_secs(3),
+        Command::new("reg")
+            .args([
+                "query",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+                "/v",
+                "LongPathsEnabled",
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| anyhow!("Timeout while checking Windows Long Paths setting"))?
+    .context("Failed to query Windows Long Paths registry setting")?;
+
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    if !output.status.success() {
+        errors.push(
+            "Failed to read Windows Long Paths setting (LongPathsEnabled) from registry"
+                .to_string(),
+        );
+        return Ok(());
+    }
+
+    if text.contains("LongPathsEnabled") && (text.contains("0x1") || text.contains("0x00000001")) {
+        crate::ui::print_line("[ok] windows long paths: enabled")?;
+    } else {
+        errors.push(
+            "Windows long paths are disabled. Enable LongPathsEnabled=1 in HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+async fn check_windows_long_paths(_errors: &mut Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 

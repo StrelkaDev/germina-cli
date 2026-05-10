@@ -62,6 +62,7 @@ pub(crate) fn ensure_launch_configs(root: &Path, cli_endpoint: &str) -> anyhow::
         .iter()
         .map(|component| (*component, detect_component_kind(root, component)))
         .collect();
+    let has_workspace_cmake = root.join("CMakeLists.txt").is_file();
 
     let active_profile = detect_launch_profile();
 
@@ -86,14 +87,24 @@ pub(crate) fn ensure_launch_configs(root: &Path, cli_endpoint: &str) -> anyhow::
     for (component, kind) in &component_states {
         match kind {
             ComponentKind::Source => {
-                configs.push(source_launch_config(
-                    component,
-                    active_profile,
-                    cli_endpoint,
-                ));
+                if has_workspace_cmake {
+                    configs.push(workspace_source_launch_config(
+                        component,
+                        active_profile,
+                        cli_endpoint,
+                    ));
+                } else {
+                    configs.push(source_launch_config(
+                        component,
+                        active_profile,
+                        cli_endpoint,
+                    ));
+                }
             }
             ComponentKind::Binary => {
-                configs.push(binary_attach_config(component, active_profile, root));
+                if !has_workspace_cmake {
+                    configs.push(binary_attach_config(component, active_profile, root));
+                }
             }
             ComponentKind::Missing => {}
         }
@@ -104,7 +115,12 @@ pub(crate) fn ensure_launch_configs(root: &Path, cli_endpoint: &str) -> anyhow::
     fs::write(&launch_path, format!("{serialized}\n"))
         .with_context(|| format!("Failed to write {}", launch_path.display()))?;
 
-    sync_tasks_json(tasks_path.as_path(), &component_states, active_profile)?;
+    sync_tasks_json(
+        tasks_path.as_path(),
+        &component_states,
+        has_workspace_cmake,
+        active_profile,
+    )?;
 
     Ok(())
 }
@@ -119,6 +135,7 @@ fn detect_launch_profile() -> LaunchProfile {
 fn sync_tasks_json(
     path: &Path,
     component_states: &[(ComponentSpec, ComponentKind)],
+    has_workspace_cmake: bool,
     active_profile: LaunchProfile,
 ) -> anyhow::Result<()> {
     let mut tasks_json = load_tasks_json(path)?;
@@ -139,9 +156,20 @@ fn sync_tasks_json(
 
     remove_managed_tasks(tasks);
 
-    for (component, kind) in component_states {
-        if matches!(kind, ComponentKind::Source) {
-            tasks.push(build_task(component, active_profile));
+    if has_workspace_cmake {
+        tasks.push(configure_workspace_task(active_profile));
+        for (component, kind) in component_states {
+            if matches!(kind, ComponentKind::Source) {
+                tasks.push(build_workspace_component_task(component, active_profile));
+            }
+        }
+        tasks.push(build_workspace_task(active_profile));
+    } else {
+        for (component, kind) in component_states {
+            if matches!(kind, ComponentKind::Source) {
+                tasks.push(configure_task(component, active_profile));
+                tasks.push(build_task(component, active_profile));
+            }
         }
     }
 
@@ -231,7 +259,12 @@ fn is_managed_launch_name(name: &str) -> bool {
 }
 
 fn is_managed_task_label(label: &str) -> bool {
-    label.starts_with("Germina Build Client (") || label.starts_with("Germina Build Server (")
+    label.starts_with("Germina Configure Client (")
+        || label.starts_with("Germina Configure Server (")
+        || label.starts_with("Germina Configure Workspace (")
+        || label.starts_with("Germina Build Client (")
+        || label.starts_with("Germina Build Server (")
+        || label.starts_with("Germina Build Workspace (")
 }
 
 fn detect_component_kind(root: &Path, component: &ComponentSpec) -> ComponentKind {
@@ -279,6 +312,136 @@ impl LaunchProfile {
             LaunchProfile::Debug => "Debug",
         }
     }
+
+    fn cmake_build_preset(self) -> &'static str {
+        match self {
+            LaunchProfile::Debug => {
+                if cfg!(windows) {
+                    "windows-build-debug"
+                } else if cfg!(target_os = "macos") {
+                    "macos-build-debug"
+                } else if cfg!(target_os = "linux") {
+                    "linux-build-debug"
+                } else {
+                    "default-build-debug"
+                }
+            }
+            LaunchProfile::Release => {
+                if cfg!(windows) {
+                    "windows-build-release"
+                } else if cfg!(target_os = "macos") {
+                    "macos-build-release"
+                } else if cfg!(target_os = "linux") {
+                    "linux-build-release"
+                } else {
+                    "default-build-release"
+                }
+            }
+        }
+    }
+
+    fn cmake_configure_preset(self) -> &'static str {
+        match self {
+            LaunchProfile::Debug => {
+                if cfg!(windows) {
+                    "windows-debug"
+                } else if cfg!(target_os = "macos") {
+                    "macos-debug"
+                } else if cfg!(target_os = "linux") {
+                    "linux-debug"
+                } else {
+                    "default-debug"
+                }
+            }
+            LaunchProfile::Release => {
+                if cfg!(windows) {
+                    "windows-release"
+                } else if cfg!(target_os = "macos") {
+                    "macos-release"
+                } else if cfg!(target_os = "linux") {
+                    "linux-release"
+                } else {
+                    "default-release"
+                }
+            }
+        }
+    }
+
+    fn cmake_workspace_component_build_preset(self, component: &ComponentSpec) -> &'static str {
+        match self {
+            LaunchProfile::Debug => match component.key {
+                "client" => {
+                    if cfg!(windows) {
+                        "windows-build-debug-client"
+                    } else if cfg!(target_os = "macos") {
+                        "macos-build-debug-client"
+                    } else if cfg!(target_os = "linux") {
+                        "linux-build-debug-client"
+                    } else {
+                        "default-build-debug-client"
+                    }
+                }
+                "server" => {
+                    if cfg!(windows) {
+                        "windows-build-debug-server"
+                    } else if cfg!(target_os = "macos") {
+                        "macos-build-debug-server"
+                    } else if cfg!(target_os = "linux") {
+                        "linux-build-debug-server"
+                    } else {
+                        "default-build-debug-server"
+                    }
+                }
+                _ => self.cmake_build_preset(),
+            },
+            LaunchProfile::Release => match component.key {
+                "client" => {
+                    if cfg!(windows) {
+                        "windows-build-release-client"
+                    } else if cfg!(target_os = "macos") {
+                        "macos-build-release-client"
+                    } else if cfg!(target_os = "linux") {
+                        "linux-build-release-client"
+                    } else {
+                        "default-build-release-client"
+                    }
+                }
+                "server" => {
+                    if cfg!(windows) {
+                        "windows-build-release-server"
+                    } else if cfg!(target_os = "macos") {
+                        "macos-build-release-server"
+                    } else if cfg!(target_os = "linux") {
+                        "linux-build-release-server"
+                    } else {
+                        "default-build-release-server"
+                    }
+                }
+                _ => self.cmake_build_preset(),
+            },
+        }
+    }
+}
+
+fn configure_task(component: &ComponentSpec, profile: LaunchProfile) -> Value {
+    let configure_cmd = format!("cmake --preset {}", profile.cmake_configure_preset());
+
+    let mut obj = Map::new();
+    obj.insert(
+        "label".to_string(),
+        Value::String(configure_task_label(component, profile)),
+    );
+    obj.insert("type".to_string(), Value::String("shell".to_string()));
+    obj.insert("command".to_string(), Value::String(configure_cmd));
+    obj.insert(
+        "options".to_string(),
+        json!({
+            "cwd": format!("${{workspaceFolder}}/{}", component.component_dir)
+        }),
+    );
+    obj.insert("problemMatcher".to_string(), Value::Array(Vec::new()));
+
+    Value::Object(obj)
 }
 
 fn source_launch_config(
@@ -333,6 +496,58 @@ fn source_launch_config(
     Value::Object(obj)
 }
 
+fn workspace_source_launch_config(
+    component: &ComponentSpec,
+    profile: LaunchProfile,
+    cli_endpoint: &str,
+) -> Value {
+    let program = if cfg!(windows) {
+        format!(
+            "${{workspaceFolder}}/out/{}/{}/{}.exe",
+            profile.build_type(),
+            component.component_dir,
+            component.binary_name
+        )
+    } else {
+        format!(
+            "${{workspaceFolder}}/out/{}/{}/{}",
+            profile.build_type(),
+            component.component_dir,
+            component.binary_name
+        )
+    };
+
+    let mut obj = Map::new();
+    obj.insert(
+        "name".to_string(),
+        Value::String(format!(
+            "Germina {} ({})",
+            component.title(),
+            profile.launch_suffix()
+        )),
+    );
+    obj.insert("type".to_string(), Value::String("lldb".to_string()));
+    obj.insert("request".to_string(), Value::String("launch".to_string()));
+    obj.insert("program".to_string(), Value::String(program));
+    obj.insert(
+        "cwd".to_string(),
+        Value::String("${workspaceFolder}".to_string()),
+    );
+    obj.insert(
+        "args".to_string(),
+        Value::Array(vec![
+            Value::String("--cli".to_string()),
+            Value::String(cli_endpoint.to_string()),
+        ]),
+    );
+    obj.insert(
+        "preLaunchTask".to_string(),
+        Value::String(build_task_label(component, profile)),
+    );
+
+    Value::Object(obj)
+}
+
 fn binary_attach_config(component: &ComponentSpec, profile: LaunchProfile, root: &Path) -> Value {
     let binary_path = binary_candidates(root, component.binary_name)
         .into_iter()
@@ -363,14 +578,7 @@ fn binary_attach_config(component: &ComponentSpec, profile: LaunchProfile, root:
 }
 
 fn build_task(component: &ComponentSpec, profile: LaunchProfile) -> Value {
-    let build_type = profile.build_type();
-    let component_path = format!("${{workspaceFolder}}/{}", component.component_dir);
-    let build_path = format!("{component_path}/build/{build_type}");
-
-    let configure_cmd = format!(
-        "cmake -S \"{component_path}\" -B \"{build_path}\" -DCMAKE_BUILD_TYPE={build_type} -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
-    );
-    let build_cmd = format!("cmake --build \"{build_path}\" --config {build_type}");
+    let build_cmd = format!("cmake --build --preset {}", profile.cmake_build_preset());
 
     let mut obj = Map::new();
     obj.insert(
@@ -378,9 +586,66 @@ fn build_task(component: &ComponentSpec, profile: LaunchProfile) -> Value {
         Value::String(build_task_label(component, profile)),
     );
     obj.insert("type".to_string(), Value::String("shell".to_string()));
+    obj.insert("command".to_string(), Value::String(build_cmd));
     obj.insert(
-        "command".to_string(),
-        Value::String(format!("{configure_cmd}; {build_cmd}")),
+        "dependsOn".to_string(),
+        Value::Array(vec![Value::String(configure_task_label(
+            component, profile,
+        ))]),
+    );
+    obj.insert(
+        "dependsOrder".to_string(),
+        Value::String("sequence".to_string()),
+    );
+    obj.insert(
+        "options".to_string(),
+        json!({
+            "cwd": format!("${{workspaceFolder}}/{}", component.component_dir)
+        }),
+    );
+    obj.insert("problemMatcher".to_string(), Value::Array(Vec::new()));
+
+    Value::Object(obj)
+}
+
+fn configure_workspace_task(profile: LaunchProfile) -> Value {
+    let configure_cmd = format!("cmake --preset {}", profile.cmake_configure_preset());
+
+    let mut obj = Map::new();
+    obj.insert(
+        "label".to_string(),
+        Value::String(configure_workspace_task_label(profile)),
+    );
+    obj.insert("type".to_string(), Value::String("shell".to_string()));
+    obj.insert("command".to_string(), Value::String(configure_cmd));
+    obj.insert(
+        "options".to_string(),
+        json!({
+            "cwd": "${workspaceFolder}"
+        }),
+    );
+    obj.insert("problemMatcher".to_string(), Value::Array(Vec::new()));
+
+    Value::Object(obj)
+}
+
+fn build_workspace_task(profile: LaunchProfile) -> Value {
+    let build_cmd = format!("cmake --build --preset {}", profile.cmake_build_preset());
+
+    let mut obj = Map::new();
+    obj.insert(
+        "label".to_string(),
+        Value::String(build_workspace_task_label(profile)),
+    );
+    obj.insert("type".to_string(), Value::String("shell".to_string()));
+    obj.insert("command".to_string(), Value::String(build_cmd));
+    obj.insert(
+        "dependsOn".to_string(),
+        Value::Array(vec![Value::String(configure_workspace_task_label(profile))]),
+    );
+    obj.insert(
+        "dependsOrder".to_string(),
+        Value::String("sequence".to_string()),
     );
     obj.insert(
         "options".to_string(),
@@ -393,10 +658,58 @@ fn build_task(component: &ComponentSpec, profile: LaunchProfile) -> Value {
     Value::Object(obj)
 }
 
+fn build_workspace_component_task(component: &ComponentSpec, profile: LaunchProfile) -> Value {
+    let build_cmd = format!(
+        "cmake --build --preset {}",
+        profile.cmake_workspace_component_build_preset(component)
+    );
+
+    let mut obj = Map::new();
+    obj.insert(
+        "label".to_string(),
+        Value::String(build_task_label(component, profile)),
+    );
+    obj.insert("type".to_string(), Value::String("shell".to_string()));
+    obj.insert("command".to_string(), Value::String(build_cmd));
+    obj.insert(
+        "dependsOn".to_string(),
+        Value::Array(vec![Value::String(configure_workspace_task_label(profile))]),
+    );
+    obj.insert(
+        "dependsOrder".to_string(),
+        Value::String("sequence".to_string()),
+    );
+    obj.insert(
+        "options".to_string(),
+        json!({
+            "cwd": "${workspaceFolder}"
+        }),
+    );
+    obj.insert("problemMatcher".to_string(), Value::Array(Vec::new()));
+
+    Value::Object(obj)
+}
+
+fn configure_task_label(component: &ComponentSpec, profile: LaunchProfile) -> String {
+    format!(
+        "Germina Configure {} ({})",
+        component.title(),
+        profile.launch_suffix()
+    )
+}
+
 fn build_task_label(component: &ComponentSpec, profile: LaunchProfile) -> String {
     format!(
         "Germina Build {} ({})",
         component.title(),
         profile.launch_suffix()
     )
+}
+
+fn configure_workspace_task_label(profile: LaunchProfile) -> String {
+    format!("Germina Configure Workspace ({})", profile.launch_suffix())
+}
+
+fn build_workspace_task_label(profile: LaunchProfile) -> String {
+    format!("Germina Build Workspace ({})", profile.launch_suffix())
 }
